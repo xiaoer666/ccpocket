@@ -1,9 +1,10 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { spawnMock, fakeChildren } = vi.hoisted(() => ({
+const { spawnMock, fakeChildren, originalPlatform } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   fakeChildren: [] as FakeChildProcess[],
+  originalPlatform: process.platform,
 }));
 
 class FakeWritable extends EventEmitter {
@@ -40,6 +41,10 @@ import { CodexProcess } from "./codex-process.js";
 
 describe("CodexProcess (app-server)", () => {
   beforeEach(() => {
+    Object.defineProperty(process, "platform", {
+      value: "linux",
+      configurable: true,
+    });
     spawnMock.mockReset();
     fakeChildren.length = 0;
     spawnMock.mockImplementation(() => {
@@ -50,6 +55,10 @@ describe("CodexProcess (app-server)", () => {
   });
 
   afterEach(() => {
+    Object.defineProperty(process, "platform", {
+      value: originalPlatform,
+      configurable: true,
+    });
     for (const child of fakeChildren) {
       if (!child.killed) {
         child.kill();
@@ -198,6 +207,31 @@ describe("CodexProcess (app-server)", () => {
         },
       },
     });
+
+    proc.stop();
+  });
+
+  it("starts codex app-server via cmd.exe on Windows", async () => {
+    Object.defineProperty(process, "platform", {
+      value: "win32",
+      configurable: true,
+    });
+
+    const proc = new CodexProcess();
+    proc.start("C:/tmp/project-win", {
+      sandboxMode: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(spawnMock).toHaveBeenCalledWith(
+      "cmd.exe",
+      ["/d", "/s", "/c", "codex app-server --listen stdio://"],
+      expect.objectContaining({
+        cwd: "C:/tmp/project-win",
+        windowsVerbatimArguments: true,
+      }),
+    );
 
     proc.stop();
   });

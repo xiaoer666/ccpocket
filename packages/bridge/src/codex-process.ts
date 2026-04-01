@@ -352,11 +352,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       `[codex-process] Starting app-server (cwd: ${projectPath}, sandbox: ${options?.sandboxMode ?? "workspace-write"}, approval: ${options?.approvalPolicy ?? "never"}, model: ${options?.model ?? "default"}, collaboration: ${this._collaborationMode})`,
     );
 
-    const child = spawn("codex", ["app-server", "--listen", "stdio://"], {
-      cwd: projectPath,
-      stdio: "pipe",
-      env: process.env,
-    });
+    const child = spawnCodexAppServer(projectPath);
     this.child = child;
 
     child.stdout.setEncoding("utf8");
@@ -1908,6 +1904,23 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       this.setStatus(this.pendingTurnId ? "running" : "idle");
     }
   }
+}
+
+function spawnCodexAppServer(projectPath: string): ChildProcessWithoutNullStreams {
+  if (process.platform === "win32") {
+    return spawn("cmd.exe", ["/d", "/s", "/c", "codex app-server --listen stdio://"], {
+      cwd: projectPath,
+      stdio: "pipe",
+      env: process.env,
+      windowsVerbatimArguments: true,
+    });
+  }
+
+  return spawn("codex", ["app-server", "--listen", "stdio://"], {
+    cwd: projectPath,
+    stdio: "pipe",
+    env: process.env,
+  });
 }
 
 function buildApprovalResponse(
