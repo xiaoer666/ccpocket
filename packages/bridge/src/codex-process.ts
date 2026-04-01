@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm, writeFile } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { buildProviderProcessEnv } from "./proxy.js";
 import type { ServerMessage, ProcessStatus } from "./parser.js";
 
 export interface CodexStartOptions {
@@ -352,7 +353,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       `[codex-process] Starting app-server (cwd: ${projectPath}, sandbox: ${options?.sandboxMode ?? "workspace-write"}, approval: ${options?.approvalPolicy ?? "never"}, model: ${options?.model ?? "default"}, collaboration: ${this._collaborationMode})`,
     );
 
-    const child = spawnCodexAppServer(projectPath);
+    const child = spawnCodexAppServer(projectPath, buildProviderProcessEnv("codex"));
     this.child = child;
 
     child.stdout.setEncoding("utf8");
@@ -1906,12 +1907,15 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   }
 }
 
-function spawnCodexAppServer(projectPath: string): ChildProcessWithoutNullStreams {
+function spawnCodexAppServer(
+  projectPath: string,
+  env: NodeJS.ProcessEnv,
+): ChildProcessWithoutNullStreams {
   if (process.platform === "win32") {
     return spawn("cmd.exe", ["/d", "/s", "/c", "codex app-server --listen stdio://"], {
       cwd: projectPath,
       stdio: "pipe",
-      env: process.env,
+      env,
       windowsVerbatimArguments: true,
     });
   }
@@ -1919,7 +1923,7 @@ function spawnCodexAppServer(projectPath: string): ChildProcessWithoutNullStream
   return spawn("codex", ["app-server", "--listen", "stdio://"], {
     cwd: projectPath,
     stdio: "pipe",
-    env: process.env,
+    env,
   });
 }
 

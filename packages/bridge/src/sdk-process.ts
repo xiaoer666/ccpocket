@@ -15,6 +15,7 @@ import {
   getValidClaudeAccessToken,
   validateClaudeAccessToken,
 } from "./usage.js";
+import { buildProviderProcessEnv } from "./proxy.js";
 
 // Tools that are auto-approved in acceptEdits mode
 export const ACCEPT_EDITS_AUTO_APPROVE = new Set([
@@ -506,6 +507,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
   private startSdkQuery(projectPath: string, options?: StartOptions): void {
     console.log(`[sdk-process] Starting SDK query (cwd: ${projectPath}, mode: ${options?.permissionMode ?? "default"}${options?.sessionId ? `, resume: ${options.sessionId}` : ""}${options?.continueMode ? ", continue: true" : ""})`);
+    const processEnv = buildProviderProcessEnv("claude");
 
     // In -p mode with --input-format stream-json, Claude CLI won't emit
     // system/init until the first user input. Set a fallback timeout to
@@ -527,6 +529,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         resume: options?.sessionId,
         continue: options?.continueMode,
         permissionMode: options?.permissionMode ?? "default",
+        env: processEnv,
         ...(options?.model ? { model: options.model } : {}),
         ...(options?.effort ? { effort: options.effort } : {}),
         ...(options?.maxTurns != null ? { maxTurns: options.maxTurns } : {}),

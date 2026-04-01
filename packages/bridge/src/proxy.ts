@@ -18,6 +18,8 @@ import { SocksClient, type SocksProxy } from "socks";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type { Socket } from "node:net";
 
+type CliProvider = "claude" | "codex";
+
 function getProxyUrl(): string | undefined {
   return (
     process.env.HTTPS_PROXY ||
@@ -27,6 +29,50 @@ function getProxyUrl(): string | undefined {
     process.env.ALL_PROXY ||
     process.env.all_proxy
   );
+}
+
+function getBridgeCliProxy(provider: CliProvider): string | undefined {
+  const providerSpecific =
+    provider === "claude"
+      ? process.env.BRIDGE_CLAUDE_PROXY
+      : process.env.BRIDGE_CODEX_PROXY;
+  const raw = providerSpecific ?? process.env.BRIDGE_CLI_PROXY;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function withProxyEnv(baseEnv: NodeJS.ProcessEnv, proxyUrl: string): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv,
+    HTTPS_PROXY: proxyUrl,
+    https_proxy: proxyUrl,
+    HTTP_PROXY: proxyUrl,
+    http_proxy: proxyUrl,
+    ALL_PROXY: proxyUrl,
+    all_proxy: proxyUrl,
+  };
+}
+
+export function buildProviderProcessEnv(
+  provider: CliProvider,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const proxyUrl = getBridgeCliProxy(provider);
+  if (!proxyUrl) return baseEnv;
+
+  try {
+    // Validate once to fail fast on malformed config.
+    new URL(proxyUrl);
+  } catch {
+    const envName =
+      provider === "claude"
+        ? "BRIDGE_CLAUDE_PROXY/BRIDGE_CLI_PROXY"
+        : "BRIDGE_CODEX_PROXY/BRIDGE_CLI_PROXY";
+    console.warn(`[proxy] Invalid ${envName}: ${proxyUrl}`);
+    return baseEnv;
+  }
+
+  return withProxyEnv(baseEnv, proxyUrl);
 }
 
 export function setupProxy(): string | undefined {

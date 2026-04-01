@@ -38,6 +38,9 @@ ccpocket-bridge
 | `BRIDGE_DEMO_MODE` | (none) | Demo mode: hide Tailscale IPs and API key from QR code / logs |
 | `BRIDGE_RECORDING` | (none) | Enable session recording for debugging (enabled when set) |
 | `HTTPS_PROXY` | (none) | Proxy for outgoing fetch requests (`http://`, `socks5://`) |
+| `BRIDGE_CLI_PROXY` | (none) | Proxy injected into Claude/Codex CLI startup env (`http://`, `https://`, `socks5://`) |
+| `BRIDGE_CLAUDE_PROXY` | (none) | Claude-only override for CLI startup proxy (higher priority than `BRIDGE_CLI_PROXY`) |
+| `BRIDGE_CODEX_PROXY` | (none) | Codex-only override for CLI startup proxy (higher priority than `BRIDGE_CLI_PROXY`) |
 
 ```bash
 # Example: custom port with API key

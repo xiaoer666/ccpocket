@@ -18,14 +18,74 @@ vi.mock("socks", () => ({
   },
 }));
 
-const { setupProxy } = await import("./proxy.js");
+const { setupProxy, buildProviderProcessEnv } = await import("./proxy.js");
 
 // Save and restore env vars
 const PROXY_VARS = [
   "HTTPS_PROXY", "https_proxy",
   "HTTP_PROXY", "http_proxy",
   "ALL_PROXY", "all_proxy",
+  "BRIDGE_CLI_PROXY",
+  "BRIDGE_CLAUDE_PROXY",
+  "BRIDGE_CODEX_PROXY",
 ] as const;
+
+describe("buildProviderProcessEnv", () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of PROXY_VARS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of PROXY_VARS) {
+      if (savedEnv[key] !== undefined) {
+        process.env[key] = savedEnv[key];
+      } else {
+        delete process.env[key];
+      }
+    }
+  });
+
+  it("returns original env when no bridge proxy is set", () => {
+    const baseEnv = { PATH: "/usr/bin" };
+    expect(buildProviderProcessEnv("claude", baseEnv)).toBe(baseEnv);
+    expect(buildProviderProcessEnv("codex", baseEnv)).toBe(baseEnv);
+  });
+
+  it("uses BRIDGE_CLI_PROXY for both providers", () => {
+    process.env.BRIDGE_CLI_PROXY = "http://proxy.local:3128";
+
+    const claudeEnv = buildProviderProcessEnv("claude", { PATH: "x" });
+    const codexEnv = buildProviderProcessEnv("codex", { PATH: "x" });
+
+    expect(claudeEnv.HTTPS_PROXY).toBe("http://proxy.local:3128");
+    expect(codexEnv.HTTP_PROXY).toBe("http://proxy.local:3128");
+    expect(claudeEnv.ALL_PROXY).toBe("http://proxy.local:3128");
+  });
+
+  it("provider-specific proxy overrides BRIDGE_CLI_PROXY", () => {
+    process.env.BRIDGE_CLI_PROXY = "http://shared.local:3128";
+    process.env.BRIDGE_CLAUDE_PROXY = "http://claude.local:8080";
+    process.env.BRIDGE_CODEX_PROXY = "socks5://codex.local:1080";
+
+    const claudeEnv = buildProviderProcessEnv("claude", { PATH: "x" });
+    const codexEnv = buildProviderProcessEnv("codex", { PATH: "x" });
+
+    expect(claudeEnv.HTTPS_PROXY).toBe("http://claude.local:8080");
+    expect(codexEnv.HTTPS_PROXY).toBe("socks5://codex.local:1080");
+  });
+
+  it("returns original env on invalid bridge proxy URL", () => {
+    process.env.BRIDGE_CLI_PROXY = "not a url";
+    const baseEnv = { PATH: "x" };
+    expect(buildProviderProcessEnv("claude", baseEnv)).toBe(baseEnv);
+  });
+});
 
 describe("setupProxy", () => {
   let savedEnv: Record<string, string | undefined>;

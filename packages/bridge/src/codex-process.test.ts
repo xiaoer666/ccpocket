@@ -38,9 +38,14 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { CodexProcess } from "./codex-process.js";
+import * as proxy from "./proxy.js";
 
 describe("CodexProcess (app-server)", () => {
+  const buildProviderProcessEnvSpy = vi
+    .spyOn(proxy, "buildProviderProcessEnv")
+    .mockReturnValue(process.env);
   beforeEach(() => {
+    buildProviderProcessEnvSpy.mockClear();
     Object.defineProperty(process, "platform", {
       value: "linux",
       configurable: true,
@@ -78,6 +83,7 @@ describe("CodexProcess (app-server)", () => {
     });
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(buildProviderProcessEnvSpy).toHaveBeenCalledWith("codex");
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",
       ["app-server", "--listen", "stdio://"],
@@ -224,6 +230,7 @@ describe("CodexProcess (app-server)", () => {
     });
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(buildProviderProcessEnvSpy).toHaveBeenCalledWith("codex");
     expect(spawnMock).toHaveBeenCalledWith(
       "cmd.exe",
       ["/d", "/s", "/c", "codex app-server --listen stdio://"],
@@ -242,6 +249,7 @@ describe("CodexProcess (app-server)", () => {
     const initializePromise = proc.initializeOnly("/tmp/project-init-only");
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(buildProviderProcessEnvSpy).toHaveBeenCalledWith("codex");
     expect(spawnMock).toHaveBeenCalledWith(
       "codex",
       ["app-server", "--listen", "stdio://"],
