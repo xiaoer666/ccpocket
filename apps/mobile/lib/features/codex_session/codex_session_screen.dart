@@ -60,6 +60,7 @@ class CodexSessionScreen extends StatefulWidget {
   final bool isPending;
   final String? initialSandboxMode;
   final String? initialPermissionMode;
+  final String? initialApprovalPolicy;
 
   /// Notifier from the parent that may already hold a [SystemMessage]
   /// with subtype `session_created` (race condition fix).
@@ -74,6 +75,7 @@ class CodexSessionScreen extends StatefulWidget {
     this.isPending = false,
     this.initialSandboxMode,
     this.initialPermissionMode,
+    this.initialApprovalPolicy,
     this.pendingSessionCreated,
   });
 
@@ -89,6 +91,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
   late bool _isPending;
   SandboxMode? _sandboxMode;
   PermissionMode? _permissionMode;
+  CodexApprovalPolicy? _codexApprovalPolicy;
   StreamSubscription<ServerMessage>? _pendingSub;
   StreamSubscription<ServerMessage>? _sandboxRestartSub;
 
@@ -102,6 +105,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
     _isPending = widget.isPending;
     _sandboxMode = sandboxModeFromRaw(widget.initialSandboxMode);
     _permissionMode = permissionModeFromRaw(widget.initialPermissionMode);
+    _codexApprovalPolicy = codexApprovalPolicyFromRaw(
+      widget.initialApprovalPolicy,
+    );
 
     if (_isPending) {
       _listenForSessionCreated();
@@ -174,6 +180,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(msg.sandboxMode) ?? _sandboxMode;
       _permissionMode =
           permissionModeFromRaw(msg.permissionMode) ?? _permissionMode;
+      _codexApprovalPolicy =
+          codexApprovalPolicyFromRaw(msg.approvalPolicy) ??
+          _codexApprovalPolicy;
     });
   }
 
@@ -193,6 +202,9 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       _sandboxMode = sandboxModeFromRaw(msg.sandboxMode) ?? _sandboxMode;
       _permissionMode =
           permissionModeFromRaw(msg.permissionMode) ?? _permissionMode;
+      _codexApprovalPolicy =
+          codexApprovalPolicyFromRaw(msg.approvalPolicy) ??
+          _codexApprovalPolicy;
       _isPending = false;
     });
     _pendingSub?.cancel();
@@ -233,6 +245,7 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
       worktreePath: _worktreePath,
       sandboxMode: _sandboxMode,
       permissionMode: _permissionMode,
+      codexApprovalPolicy: _codexApprovalPolicy,
     );
   }
 }
@@ -248,6 +261,7 @@ class _CodexProviders extends StatelessWidget {
   final String? worktreePath;
   final SandboxMode? sandboxMode;
   final PermissionMode? permissionMode;
+  final CodexApprovalPolicy? codexApprovalPolicy;
 
   const _CodexProviders({
     super.key,
@@ -257,6 +271,7 @@ class _CodexProviders extends StatelessWidget {
     this.worktreePath,
     this.sandboxMode,
     this.permissionMode,
+    this.codexApprovalPolicy,
   });
 
   @override
@@ -273,6 +288,7 @@ class _CodexProviders extends StatelessWidget {
             streamingCubit: streamingCubit,
             initialSandboxMode: sandboxMode,
             initialPermissionMode: permissionMode,
+            initialCodexApprovalPolicy: codexApprovalPolicy,
           ),
         ),
         BlocProvider.value(value: streamingCubit),
@@ -544,7 +560,28 @@ class _CodexChatBody extends HookWidget {
               ),
               actions: [
                 // View Changes button
-                if (projectPath != null)
+                if ((projectPath ?? '').isNotEmpty)
+                  IconButton(
+                    key: const ValueKey('appbar_explore_button'),
+                    icon: Icon(
+                      Icons.folder_outlined,
+                      size: 18,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 32,
+                      minHeight: 32,
+                    ),
+                    tooltip: 'Explore',
+                    onPressed: () => context.router.push(
+                      ExploreRoute(
+                        projectPath: projectPath!,
+                        initialFiles: context.read<FileListCubit>().state,
+                      ),
+                    ),
+                  ),
+                if ((projectPath ?? '').isNotEmpty)
                   IconButton(
                     key: const ValueKey('appbar_view_changes'),
                     icon: Icon(
@@ -726,6 +763,7 @@ class _CodexChatBody extends HookWidget {
                                       AskUserQuestionWidget(
                                         toolUseId: askId,
                                         input: askInput,
+                                        agentName: 'Codex',
                                         onAnswer: answerQuestion,
                                         scrollable: false,
                                       ),

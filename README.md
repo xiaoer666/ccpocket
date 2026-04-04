@@ -119,8 +119,8 @@ In the app, choose a project, pick your AI tool, and configure session modes.
 
 | Setting | Options | Description |
 |---------|---------|-------------|
-| **Execution** | `Default` / `Full Access` | Controls which operations require approval |
-| **Plan** | On / Off | Toggle planning mode independently of execution mode |
+| **Approval Policy** | `Untrusted` / `On Request` / `On Failure` / `Never Ask` | Controls when Codex asks for approval. `On Failure` is kept for compatibility and is deprecated. |
+| **Plan** | On / Off | Toggle planning mode independently of approval policy |
 | **Sandbox** | On (default) / Off | Run in a restricted environment for safety |
 
 > Codex defaults to Sandbox On for safety. Claude Code defaults to Sandbox Off.
@@ -299,6 +299,7 @@ cd apps/mobile && flutter pub get && cd ../..
 | `BRIDGE_ALLOWED_DIRS` | `$HOME` | Allowed project directories, comma-separated |
 | `DIFF_IMAGE_AUTO_DISPLAY_KB` | `1024` | Auto-display threshold for image diffs |
 | `DIFF_IMAGE_MAX_SIZE_MB` | `5` | Max image size for diff previews |
+| `BRIDGE_DISABLE_MDNS` | unset | Disables mDNS auto-discovery advertisement |
 | `BRIDGE_ENABLE_USAGE` | unset | Enables Claude usage tracking via the Anthropic API. **This makes direct API calls to Anthropic outside the Claude Agent SDK. Use at your own risk.** |
 
 ## License

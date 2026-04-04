@@ -169,6 +169,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
     bool isPending = false,
     String? initialSandboxMode,
     String? initialPermissionMode,
+    String? initialApprovalPolicy,
     ValueNotifier<SystemMessage?>? pendingSessionCreated,
     List<PageRouteInfo>? children,
   }) : super(
@@ -182,6 +183,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
            isPending: isPending,
            initialSandboxMode: initialSandboxMode,
            initialPermissionMode: initialPermissionMode,
+           initialApprovalPolicy: initialApprovalPolicy,
            pendingSessionCreated: pendingSessionCreated,
          ),
          initialChildren: children,
@@ -202,6 +204,7 @@ class CodexSessionRoute extends PageRouteInfo<CodexSessionRouteArgs> {
         isPending: args.isPending,
         initialSandboxMode: args.initialSandboxMode,
         initialPermissionMode: args.initialPermissionMode,
+        initialApprovalPolicy: args.initialApprovalPolicy,
         pendingSessionCreated: args.pendingSessionCreated,
       );
     },
@@ -218,6 +221,7 @@ class CodexSessionRouteArgs {
     this.isPending = false,
     this.initialSandboxMode,
     this.initialPermissionMode,
+    this.initialApprovalPolicy,
     this.pendingSessionCreated,
   });
 
@@ -237,11 +241,13 @@ class CodexSessionRouteArgs {
 
   final String? initialPermissionMode;
 
+  final String? initialApprovalPolicy;
+
   final ValueNotifier<SystemMessage?>? pendingSessionCreated;
 
   @override
   String toString() {
-    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, pendingSessionCreated: $pendingSessionCreated}';
+    return 'CodexSessionRouteArgs{key: $key, sessionId: $sessionId, projectPath: $projectPath, gitBranch: $gitBranch, worktreePath: $worktreePath, isPending: $isPending, initialSandboxMode: $initialSandboxMode, initialPermissionMode: $initialPermissionMode, initialApprovalPolicy: $initialApprovalPolicy, pendingSessionCreated: $pendingSessionCreated}';
   }
 
   @override
@@ -256,6 +262,7 @@ class CodexSessionRouteArgs {
         isPending == other.isPending &&
         initialSandboxMode == other.initialSandboxMode &&
         initialPermissionMode == other.initialPermissionMode &&
+        initialApprovalPolicy == other.initialApprovalPolicy &&
         pendingSessionCreated == other.pendingSessionCreated;
   }
 
@@ -269,6 +276,7 @@ class CodexSessionRouteArgs {
       isPending.hashCode ^
       initialSandboxMode.hashCode ^
       initialPermissionMode.hashCode ^
+      initialApprovalPolicy.hashCode ^
       pendingSessionCreated.hashCode;
 }
 
@@ -286,6 +294,73 @@ class DebugRoute extends PageRouteInfo<void> {
       return const DebugScreen();
     },
   );
+}
+
+/// generated route for
+/// [ExploreScreen]
+class ExploreRoute extends PageRouteInfo<ExploreRouteArgs> {
+  ExploreRoute({
+    Key? key,
+    required String projectPath,
+    List<String> initialFiles = const [],
+    List<PageRouteInfo>? children,
+  }) : super(
+         ExploreRoute.name,
+         args: ExploreRouteArgs(
+           key: key,
+           projectPath: projectPath,
+           initialFiles: initialFiles,
+         ),
+         initialChildren: children,
+       );
+
+  static const String name = 'ExploreRoute';
+
+  static PageInfo page = PageInfo(
+    name,
+    builder: (data) {
+      final args = data.argsAs<ExploreRouteArgs>();
+      return ExploreScreen(
+        key: args.key,
+        projectPath: args.projectPath,
+        initialFiles: args.initialFiles,
+      );
+    },
+  );
+}
+
+class ExploreRouteArgs {
+  const ExploreRouteArgs({
+    this.key,
+    required this.projectPath,
+    this.initialFiles = const [],
+  });
+
+  final Key? key;
+
+  final String projectPath;
+
+  final List<String> initialFiles;
+
+  @override
+  String toString() {
+    return 'ExploreRouteArgs{key: $key, projectPath: $projectPath, initialFiles: $initialFiles}';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    if (other is! ExploreRouteArgs) return false;
+    return key == other.key &&
+        projectPath == other.projectPath &&
+        const ListEquality<String>().equals(initialFiles, other.initialFiles);
+  }
+
+  @override
+  int get hashCode =>
+      key.hashCode ^
+      projectPath.hashCode ^
+      const ListEquality<String>().hash(initialFiles);
 }
 
 /// generated route for

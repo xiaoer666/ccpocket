@@ -37,6 +37,7 @@ ccpocket-bridge
 | `BRIDGE_PUBLIC_WS_URL` | (none) | Public `ws://` / `wss://` URL used for startup deep link and QR code |
 | `BRIDGE_DEMO_MODE` | (none) | Demo mode: hide Tailscale IPs and API key from QR code / logs |
 | `BRIDGE_RECORDING` | (none) | Enable session recording for debugging (enabled when set) |
+| `BRIDGE_DISABLE_MDNS` | (none) | Disable mDNS auto-discovery advertisement (enabled when set) |
 | `HTTPS_PROXY` | (none) | Proxy for outgoing fetch requests (`http://`, `socks5://`) |
 | `BRIDGE_CLI_PROXY` | (none) | Proxy injected into Claude/Codex CLI startup env (`http://`, `https://`, `socks5://`) |
 | `BRIDGE_CLAUDE_PROXY` | (none) | Claude-only override for CLI startup proxy (higher priority than `BRIDGE_CLI_PROXY`) |
@@ -51,6 +52,11 @@ BRIDGE_PUBLIC_WS_URL=wss://example.ngrok-free.app npx @ccpocket/bridge@latest
 
 # Example: same setting via CLI flag
 ccpocket-bridge --public-ws-url wss://example.ngrok-free.app
+
+# Example: disable mDNS advertisement
+BRIDGE_DISABLE_MDNS=1 npx @ccpocket/bridge@latest
+# or via CLI flag
+ccpocket-bridge --no-mdns
 ```
 
 When `BRIDGE_PUBLIC_WS_URL` is set, the startup deep link and terminal QR code

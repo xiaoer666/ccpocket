@@ -247,7 +247,7 @@ export function sdkMessageToServerMessage(msg: SDKMessage): ServerMessage | null
     }
 
     case "assistant": {
-      const ast = msg as { message: Record<string, unknown>; uuid?: string };
+      const ast = msg as unknown as { message: Record<string, unknown>; uuid?: string };
       return {
         type: "assistant",
         message: ast.message as ServerMessage extends { type: "assistant" } ? ServerMessage["message"] : never,
@@ -330,7 +330,7 @@ export function sdkMessageToServerMessage(msg: SDKMessage): ServerMessage | null
     }
 
     case "stream_event": {
-      const stream = msg as { event: Record<string, unknown> };
+      const stream = msg as unknown as { event: Record<string, unknown> };
       const event = stream.event;
       if (event.type === "content_block_delta") {
         const delta = event.delta as Record<string, unknown>;
@@ -377,12 +377,14 @@ interface PendingPermission {
 
 // PermissionResult is imported from @anthropic-ai/claude-agent-sdk
 
+type ImageMediaType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
+
 /** Image content block for SDK message */
 interface ImageBlock {
   type: "image";
   source: {
     type: "base64";
-    media_type: string;
+    media_type: ImageMediaType;
     data: string;
   };
 }
@@ -672,7 +674,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
         type: "image",
         source: {
           type: "base64",
-          media_type: image.mimeType,
+          media_type: image.mimeType as ImageMediaType,
           data: image.base64,
         },
       });
@@ -934,7 +936,7 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
               type: "image",
               source: {
                 type: "base64",
-                media_type: image.mimeType,
+                media_type: image.mimeType as ImageMediaType,
                 data: image.base64,
               },
             });
