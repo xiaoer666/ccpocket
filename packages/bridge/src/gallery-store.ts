@@ -38,6 +38,10 @@ const MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
+function normalizeProjectKey(path: string): string {
+  return resolve(path).replaceAll("\\", "/").toLowerCase();
+}
+
 function projectNameFromPath(projectPath: string): string {
   const parts = projectPath.split("/").filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : projectPath;
@@ -175,7 +179,8 @@ export class GalleryStore {
   list(options?: { projectPath?: string; sessionId?: string }): GalleryImageInfo[] {
     let items = this.index;
     if (options?.projectPath) {
-      items = items.filter((m) => m.projectPath === options.projectPath);
+      const projectKey = normalizeProjectKey(options.projectPath);
+      items = items.filter((m) => normalizeProjectKey(m.projectPath) === projectKey);
     }
     if (options?.sessionId) {
       items = items.filter((m) => m.sessionId === options.sessionId);
