@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join, dirname, isAbsolute, resolve } from "node:path";
+import { join, dirname, isAbsolute, resolve, relative } from "node:path";
 import { homedir } from "node:os";
 import { normalizeWorktreePath } from "./sessions-index.js";
 
@@ -14,6 +14,10 @@ function isValidProjectPath(path: string): boolean {
   const normalized = resolve(path).replaceAll("\\", "/");
   const segments = normalized.split("/").filter(Boolean);
   return segments.length >= MIN_PATH_SEGMENTS;
+}
+
+function normalizeProjectKey(path: string): string {
+  return resolve(path).replaceAll("\\", "/").toLowerCase();
 }
 
 export class ProjectHistory {
@@ -36,7 +40,12 @@ export class ProjectHistory {
         this.projects = raw
           .map(normalizeWorktreePath)
           .filter(isValidProjectPath)
-          .filter((p) => seen.has(p) ? false : (seen.add(p), true));
+          .filter((p) => {
+            const key = normalizeProjectKey(p);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
         // Persist cleaned data if invalid entries were removed
         if (this.projects.length < raw.length) {
           this.saveIndex().catch(() => {});
@@ -51,8 +60,11 @@ export class ProjectHistory {
   addProject(path: string): void {
     const normalized = normalizeWorktreePath(path);
     if (!isValidProjectPath(normalized)) return;
+    const normalizedKey = normalizeProjectKey(normalized);
     // Remove existing entry (if any) and add to front
-    this.projects = this.projects.filter((p) => p !== normalized);
+    this.projects = this.projects.filter(
+      (p) => normalizeProjectKey(p) !== normalizedKey,
+    );
     this.projects.unshift(normalized);
     // Enforce max limit
     if (this.projects.length > MAX_PROJECTS) {
@@ -68,7 +80,10 @@ export class ProjectHistory {
   }
 
   removeProject(path: string): void {
-    this.projects = this.projects.filter((p) => p !== path);
+    const targetKey = normalizeProjectKey(path);
+    this.projects = this.projects.filter(
+      (p) => normalizeProjectKey(p) !== targetKey,
+    );
     this.saveIndex().catch((err) => {
       console.error("[project-history] Failed to save:", err);
     });

@@ -98,6 +98,28 @@ describe("ProjectHistory", () => {
     expect(ph.getProjects()).toEqual(["E:\\code\\DIY_ESP32S3_WATCH"]);
   });
 
+  it("deduplicates Windows project paths across slash styles", async () => {
+    await writeFile(
+      historyFile,
+      JSON.stringify([
+        "E:\\code\\DIY_ESP32S3_WATCH",
+        "E:/code/DIY_ESP32S3_WATCH",
+      ]),
+      "utf-8",
+    );
+    const ph = new ProjectHistory(historyFile);
+    await ph.init();
+    expect(ph.getProjects()).toEqual(["E:\\code\\DIY_ESP32S3_WATCH"]);
+  });
+
+  it("removes Windows project path regardless of slash style", async () => {
+    const ph = new ProjectHistory(historyFile);
+    await ph.init();
+    ph.addProject("E:\\code\\DIY_ESP32S3_WATCH");
+    ph.removeProject("E:/code/DIY_ESP32S3_WATCH");
+    expect(ph.getProjects()).toEqual([]);
+  });
+
   it("filters out invalid Windows paths on init", async () => {
     await writeFile(
       historyFile,

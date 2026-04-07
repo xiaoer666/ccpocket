@@ -79,6 +79,10 @@ export function parseGtrConfig(projectPath: string): GtrConfig {
 
 const REGEX_SPECIAL = /[\\.+^$()|[\]]/g;
 
+function toPosixPath(value: string): string {
+  return value.replaceAll("\\", "/");
+}
+
 /**
  * Simple glob pattern matcher supporting:
  * - `*` matches any characters except `/`
@@ -86,11 +90,14 @@ const REGEX_SPECIAL = /[\\.+^$()|[\]]/g;
  * - `?` matches a single character except `/`
  */
 export function matchGlob(pattern: string, filePath: string): boolean {
+  const normalizedPattern = toPosixPath(pattern);
+  const normalizedFilePath = toPosixPath(filePath);
+
   let regex = "";
   let i = 0;
-  while (i < pattern.length) {
-    if (pattern[i] === "*" && pattern[i + 1] === "*") {
-      if (pattern[i + 2] === "/") {
+  while (i < normalizedPattern.length) {
+    if (normalizedPattern[i] === "*" && normalizedPattern[i + 1] === "*") {
+      if (normalizedPattern[i + 2] === "/") {
         // zero or more directory segments
         regex += "(.*/)?";
         i += 3;
@@ -99,18 +106,18 @@ export function matchGlob(pattern: string, filePath: string): boolean {
         regex += ".*";
         i += 2;
       }
-    } else if (pattern[i] === "*") {
+    } else if (normalizedPattern[i] === "*") {
       regex += "[^/]*";
       i++;
-    } else if (pattern[i] === "?") {
+    } else if (normalizedPattern[i] === "?") {
       regex += "[^/]";
       i++;
     } else {
-      regex += pattern[i].replace(REGEX_SPECIAL, "\\$&");
+      regex += normalizedPattern[i].replace(REGEX_SPECIAL, "\\$&");
       i++;
     }
   }
-  return new RegExp("^" + regex + "$").test(filePath);
+  return new RegExp("^" + regex + "$").test(normalizedFilePath);
 }
 
 // ---- Worktree Path Computation ----
@@ -316,7 +323,15 @@ export function listWorktrees(projectPath: string): WorktreeInfo[] {
       currentBranch = line.slice("branch ".length).replace(/^refs\/heads\//, "");
     } else if (line === "") {
       // End of entry
-      if (currentPath && currentPath.startsWith(wtRoot)) {
+      const normalizedPath = toPosixPath(currentPath);
+      const rel = relative(resolve(wtRoot), resolve(currentPath));
+      if (
+        currentPath &&
+        normalizedPath.startsWith(toPosixPath(wtRoot) + "/") &&
+        rel !== "" &&
+        !rel.startsWith("..") &&
+        !rel.includes(":")
+      ) {
         worktrees.push({
           worktreePath: currentPath,
           branch: currentBranch,
