@@ -159,6 +159,43 @@ void main() {
   });
 
   group('HomeContent skeleton', () {
+    testWidgets(
+      'hides recent session duplicate when running session path differs only by slash style',
+      (tester) async {
+        final running = SessionInfo.fromJson({
+          'id': 'run1',
+          'provider': 'claude',
+          'projectPath': 'E:/code/DIY_ESP32S3_WATCH',
+          'status': 'running',
+          'createdAt': '2025-01-01T00:00:00Z',
+          'lastActivityAt': '2025-01-01T00:00:00Z',
+          'gitBranch': 'main',
+        });
+        final recent = RecentSession(
+          sessionId: 'recent1',
+          provider: 'claude',
+          firstPrompt: 'resume me',
+          created: '2025-01-01T00:00:00Z',
+          modified: '2025-01-01T00:00:00Z',
+          gitBranch: 'main',
+          projectPath: r'E:\code\DIY_ESP32S3_WATCH',
+          isSidechain: false,
+        );
+
+        await tester.pumpWidget(
+          _buildHomeContent(
+            sessions: [running],
+            recentSessions: [recent],
+            cubit: cubit,
+            draftService: draftService,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(find.text('resume me'), findsNothing);
+      },
+    );
+
     testWidgets('shows Skeletonizer when isInitialLoading is true and '
         'no sessions exist', (tester) async {
       await tester.pumpWidget(

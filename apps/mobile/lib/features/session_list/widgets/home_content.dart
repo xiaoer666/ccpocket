@@ -20,6 +20,11 @@ import 'app_update_banner.dart';
 import 'bridge_update_banner.dart';
 import 'session_reconnect_banner.dart';
 
+String _normalizeProjectKey(String? path) {
+  if (path == null || path.isEmpty) return '';
+  return path.replaceAll('\\', '/').toLowerCase();
+}
+
 class HomeContent extends StatefulWidget {
   final BridgeConnectionState connectionState;
   final String? bridgeVersion;
@@ -229,7 +234,8 @@ class HomeContentState extends State<HomeContent> {
       if (runningSessionIds.contains(rs.sessionId)) return true;
       for (final s in widget.sessions) {
         if (s.provider == rs.provider &&
-            s.projectPath == rs.projectPath &&
+            _normalizeProjectKey(s.projectPath) ==
+                _normalizeProjectKey(rs.projectPath) &&
             s.createdAt == rs.created) {
           return true;
         }
