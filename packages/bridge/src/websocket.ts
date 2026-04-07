@@ -230,6 +230,7 @@ export interface BridgeServerOptions {
 export class BridgeWebSocketServer {
   private static readonly MAX_DEBUG_EVENTS = 800;
   private static readonly MAX_HISTORY_SUMMARY_ITEMS = 300;
+  private static readonly HEARTBEAT_INTERVAL_MS = 30_000;
 
   private wss: WebSocketServer;
   private sessionManager: SessionManager;
@@ -243,6 +244,8 @@ export class BridgeWebSocketServer {
   private worktreeStore: WorktreeStore;
   private pushRelay: PushRelayClient;
   private promptHistoryBackup: PromptHistoryBackupStore | null;
+  private heartbeatInterval: NodeJS.Timeout | null = null;
+  private wsLiveness = new WeakMap<WebSocket, boolean>();
 
   private recentSessionsRequestId = 0;
   private debugEvents = new Map<string, DebugTraceEvent[]>();
@@ -251,6 +254,7 @@ export class BridgeWebSocketServer {
   /** FCM token → push notification locale */
   private tokenLocales = new Map<string, PushLocale>();
   private tokenPrivacyMode = new Map<string, boolean>();
+  private pendingResumeWaiters = new Map<string, Set<WebSocket>>();
   private failSetPermissionMode = envFlagEnabled(
     "BRIDGE_FAIL_SET_PERMISSION_MODE",
   );
@@ -336,6 +340,8 @@ export class BridgeWebSocketServer {
       console.error("[ws] Server error:", err.message);
     });
 
+    this.startHeartbeat();
+
     console.log(`[ws] WebSocket server attached to HTTP server`);
   }
 
@@ -346,9 +352,11 @@ export class BridgeWebSocketServer {
   private isPathAllowed(path: string): boolean {
     if (this.allowedDirs.length === 0) return true;
     const resolved = resolve(path);
-    return this.allowedDirs.some(
-      (dir) => resolved === dir || resolved.startsWith(dir + "/"),
-    );
+    return this.allowedDirs.some((dir) => {
+      const allowedRoot = resolve(dir);
+      const rel = relative(allowedRoot, resolved);
+      return rel === "" || (!rel.startsWith("..") && !rel.includes(":") && rel !== ".");
+    });
   }
 
   /** Build a user-friendly error for disallowed project paths. */
@@ -488,9 +496,31 @@ export class BridgeWebSocketServer {
 
   close(): void {
     console.log("[ws] Shutting down...");
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
     this.sessionManager.destroyAll();
     this.debugEvents.clear();
     this.wss.close();
+  }
+
+  private startHeartbeat(): void {
+    this.heartbeatInterval = setInterval(() => {
+      for (const client of this.wss.clients) {
+        if (client.readyState !== WebSocket.OPEN) continue;
+        const isAlive = this.wsLiveness.get(client) ?? false;
+        if (!isAlive) {
+          console.warn("[ws] Terminating stale client connection");
+          client.terminate();
+          this.wsLiveness.delete(client);
+          continue;
+        }
+        this.wsLiveness.set(client, false);
+        client.ping();
+      }
+    }, BridgeWebSocketServer.HEARTBEAT_INTERVAL_MS);
+    this.heartbeatInterval.unref();
   }
 
   /** Return session count for /health endpoint. */
@@ -504,6 +534,11 @@ export class BridgeWebSocketServer {
   }
 
   private handleConnection(ws: WebSocket): void {
+    this.wsLiveness.set(ws, true);
+    ws.on("pong", () => {
+      this.wsLiveness.set(ws, true);
+    });
+
     // Send session list and project history on connect
     this.sendSessionList(ws);
     const projects = this.projectHistory?.getProjects() ?? [];
@@ -536,10 +571,25 @@ export class BridgeWebSocketServer {
       }
 
       console.log(`[ws] Received: ${msg.type}`);
-      this.handleClientMessage(msg, ws);
+      void this.handleClientMessage(msg, ws).catch((err) => {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`[ws] Failed to handle message ${msg.type}:`, err);
+        this.send(ws, {
+          type: "error",
+          errorCode: "message_handler_failed",
+          message: detail,
+        });
+      });
     });
 
     ws.on("close", () => {
+      this.wsLiveness.delete(ws);
+      for (const [key, waiters] of this.pendingResumeWaiters.entries()) {
+        waiters.delete(ws);
+        if (waiters.size === 0) {
+          this.pendingResumeWaiters.delete(key);
+        }
+      }
       console.log("[ws] Client disconnected");
     });
 
@@ -1966,24 +2016,85 @@ export class BridgeWebSocketServer {
 
       case "resume_session": {
         console.log(
-          `[ws] resume_session: sessionId=${msg.sessionId} projectPath=${msg.projectPath} provider=${msg.provider ?? "claude"}`,
+          `[ws] resume_session: sessionId=${msg.sessionId} projectPath=${msg.projectPath} resumeCwd=${msg.resumeCwd ?? ""} provider=${msg.provider ?? "claude"}`,
         );
         if (!this.isPathAllowed(msg.projectPath)) {
+          console.warn(
+            `[ws] resume_session denied: projectPath=${msg.projectPath} allowedDirs=${this.allowedDirs.join(",")}`,
+          );
           this.send(ws, this.buildPathNotAllowedError(msg.projectPath));
+          break;
+        }
+        if (msg.resumeCwd && !this.isPathAllowed(msg.resumeCwd)) {
+          console.warn(
+            `[ws] resume_session denied: resumeCwd=${msg.resumeCwd} allowedDirs=${this.allowedDirs.join(",")}`,
+          );
+          this.send(ws, this.buildPathNotAllowedError(msg.resumeCwd));
           break;
         }
         const provider = msg.provider ?? "claude";
         const codexApprovalPolicy =
           provider === "codex"
-              ? normalizeCodexApprovalPolicy(
-                  msg.approvalPolicy ??
-                      (msg.executionMode == null
-                          ? undefined
-                          : msg.executionMode === "fullAccess"
-                          ? "never"
-                          : "on-request"),
-                )
-              : undefined;
+            ? normalizeCodexApprovalPolicy(
+                msg.approvalPolicy ??
+                  (msg.executionMode == null
+                    ? undefined
+                    : msg.executionMode === "fullAccess"
+                      ? "never"
+                      : "on-request"),
+              )
+            : undefined;
+        const resumeKey = `${provider}:${msg.sessionId}`;
+        const existingResumeSession = this.sessionManager
+          .list()
+          .find(
+            (session) =>
+              session.provider === provider &&
+              session.claudeSessionId === msg.sessionId,
+          );
+        if (existingResumeSession) {
+          const existing = this.sessionManager.get(existingResumeSession.id);
+          if (existing) {
+            void this.loadAndSetSessionName(
+              existing,
+              provider,
+              existing.projectPath,
+              msg.sessionId,
+            ).then(() => {
+              this.send(
+                ws,
+                this.buildSessionCreatedMessage({
+                  sessionId: existing.id,
+                  provider: existing.provider,
+                  projectPath: existing.projectPath,
+                  session: existing,
+                  ...(existing.provider === "codex"
+                    ? {
+                        sandboxMode: existing.codexSettings?.sandboxMode
+                          ? sandboxModeToExternal(existing.codexSettings.sandboxMode)
+                          : undefined,
+                      }
+                    : {
+                        sandboxMode:
+                          existing.sandboxEnabled != null
+                            ? existing.sandboxEnabled
+                              ? "on"
+                              : "off"
+                            : undefined,
+                      }),
+                }),
+              );
+              this.broadcastSessionList();
+            });
+          }
+          break;
+        }
+        const pendingWaiters = this.pendingResumeWaiters.get(resumeKey);
+        if (pendingWaiters) {
+          pendingWaiters.add(ws);
+          break;
+        }
+        this.pendingResumeWaiters.set(resumeKey, new Set([ws]));
         const executionMode = deriveExecutionMode({
           provider,
           permissionMode: msg.permissionMode,
@@ -2011,6 +2122,7 @@ export class BridgeWebSocketServer {
                 useWorktree?: boolean;
                 worktreeBranch?: string;
                 existingWorktreePath?: string;
+                resumeCwd?: string;
               }
             | undefined;
           if (wtMapping) {
@@ -2025,10 +2137,17 @@ export class BridgeWebSocketServer {
                 worktreeBranch: wtMapping.worktreeBranch,
               };
             }
+          } else if (msg.resumeCwd && msg.resumeCwd !== effectiveProjectPath) {
+            worktreeOpts = {
+              resumeCwd: msg.resumeCwd,
+            };
           }
 
           getCodexSessionHistory(sessionRefId)
             .then((pastMessages) => {
+              console.log(
+                `[ws] codex resume: thread=${sessionRefId} effectiveProjectPath=${effectiveProjectPath} worktree=${worktreeOpts?.existingWorktreePath ?? worktreeOpts?.resumeCwd ?? ""} history=${pastMessages.length}`,
+              );
               const sessionId = this.sessionManager.create(
                 effectiveProjectPath,
                 undefined,
@@ -2061,29 +2180,40 @@ export class BridgeWebSocketServer {
                 },
               );
               const createdSession = this.sessionManager.get(sessionId);
+              console.log(
+                `[ws] codex resume created: bridgeSession=${sessionId} thread=${sessionRefId} sessionProjectPath=${createdSession?.projectPath ?? ""}`,
+              );
               void this.loadAndSetSessionName(
                 createdSession,
                 "codex",
                 effectiveProjectPath,
                 sessionRefId,
               ).then(() => {
-                this.send(
-                  ws,
-                  this.buildSessionCreatedMessage({
-                    sessionId,
-                    provider: "codex",
-                    projectPath: effectiveProjectPath,
-                    session: createdSession,
-                    sandboxMode: createdSession?.codexSettings?.sandboxMode
-                      ? sandboxModeToExternal(
-                          createdSession.codexSettings.sandboxMode,
-                        )
-                      : undefined,
-                    permissionMode: legacyPermissionMode,
-                    executionMode,
-                    planMode,
-                  }),
+                const waiters = this.pendingResumeWaiters.get(resumeKey);
+                const targets = waiters
+                  ? Array.from(waiters)
+                  : [ws];
+                const createdMsg = this.buildSessionCreatedMessage({
+                  sessionId,
+                  provider: "codex",
+                  projectPath: effectiveProjectPath,
+                  session: createdSession,
+                  sandboxMode: createdSession?.codexSettings?.sandboxMode
+                    ? sandboxModeToExternal(
+                        createdSession.codexSettings.sandboxMode,
+                      )
+                    : undefined,
+                  permissionMode: legacyPermissionMode,
+                  executionMode,
+                  planMode,
+                });
+                console.log(
+                  `[ws] codex resume session_created: bridgeSession=${sessionId} thread=${sessionRefId} waiters=${targets.length} projectPath=${String(createdMsg.projectPath ?? "")}`,
                 );
+                for (const target of targets) {
+                  this.send(target, createdMsg);
+                }
+                this.pendingResumeWaiters.delete(resumeKey);
                 this.broadcastSessionList();
               });
               this.debugEvents.set(sessionId, []);
@@ -2096,6 +2226,7 @@ export class BridgeWebSocketServer {
               this.projectHistory?.addProject(effectiveProjectPath);
             })
             .catch((err) => {
+              this.pendingResumeWaiters.delete(resumeKey);
               this.send(ws, {
                 type: "error",
                 message: `Failed to load Codex session history: ${err}`,
@@ -2109,11 +2240,13 @@ export class BridgeWebSocketServer {
 
         // Look up worktree mapping for this Claude session
         const wtMapping = this.worktreeStore.get(claudeSessionId);
+        const effectiveProjectPath = wtMapping?.projectPath ?? msg.projectPath;
         let worktreeOpts:
           | {
               useWorktree?: boolean;
               worktreeBranch?: string;
               existingWorktreePath?: string;
+              resumeCwd?: string;
             }
           | undefined;
         if (wtMapping) {
@@ -2130,58 +2263,97 @@ export class BridgeWebSocketServer {
               worktreeBranch: wtMapping.worktreeBranch,
             };
           }
+        } else if (msg.resumeCwd && msg.resumeCwd !== effectiveProjectPath) {
+          worktreeOpts = {
+            resumeCwd: msg.resumeCwd,
+          };
         }
 
         getSessionHistory(claudeSessionId)
           .then((pastMessages) => {
-            const sessionId = this.sessionManager.create(
-              msg.projectPath,
-              {
-                sessionId: claudeSessionId,
-                permissionMode: legacyPermissionMode,
-                model: msg.model,
-                effort: msg.effort,
-                maxTurns: msg.maxTurns,
-                maxBudgetUsd: msg.maxBudgetUsd,
-                fallbackModel: msg.fallbackModel,
-                forkSession: msg.forkSession,
-                persistSession: msg.persistSession,
-                ...(msg.sandboxMode
-                  ? { sandboxEnabled: msg.sandboxMode === "on" }
-                  : {}),
-              },
-              pastMessages,
-              worktreeOpts,
+            console.log(
+              `[ws] claude resume: session=${claudeSessionId} effectiveProjectPath=${effectiveProjectPath} worktree=${worktreeOpts?.existingWorktreePath ?? worktreeOpts?.resumeCwd ?? ""} history=${pastMessages.length}`,
             );
+            let sessionId: string;
+            try {
+              sessionId = this.sessionManager.create(
+                effectiveProjectPath,
+                {
+                  sessionId: claudeSessionId,
+                  permissionMode: legacyPermissionMode,
+                  model: msg.model,
+                  effort: msg.effort,
+                  maxTurns: msg.maxTurns,
+                  maxBudgetUsd: msg.maxBudgetUsd,
+                  fallbackModel: msg.fallbackModel,
+                  forkSession: msg.forkSession,
+                  persistSession: msg.persistSession,
+                  ...(msg.sandboxMode
+                    ? { sandboxEnabled: msg.sandboxMode === "on" }
+                    : {}),
+                },
+                pastMessages,
+                worktreeOpts,
+              );
+            } catch (err) {
+              console.error(
+                `[ws] claude resume create failed: session=${claudeSessionId} effectiveProjectPath=${effectiveProjectPath} worktree=${worktreeOpts?.existingWorktreePath ?? worktreeOpts?.resumeCwd ?? ""}`,
+                err,
+              );
+              this.pendingResumeWaiters.delete(resumeKey);
+              this.send(ws, {
+                type: "error",
+                message: `Failed to resume session runtime: ${String(err)}`,
+              });
+              return;
+            }
             const createdSession = this.sessionManager.get(sessionId);
+            console.log(
+              `[ws] claude resume created: bridgeSession=${sessionId} cliSession=${claudeSessionId} sessionProjectPath=${createdSession?.projectPath ?? ""}`,
+            );
+
+            const waiters = this.pendingResumeWaiters.get(resumeKey);
+            const targets = waiters
+              ? Array.from(waiters)
+              : [ws];
+            const createdMsg = {
+              ...this.buildSessionCreatedMessage({
+                sessionId,
+                provider: "claude",
+                projectPath: effectiveProjectPath,
+                session: createdSession,
+                permissionMode: legacyPermissionMode,
+                executionMode,
+                planMode,
+                sandboxMode: msg.sandboxMode,
+                ...(cached
+                  ? {
+                      slashCommands: cached.slashCommands,
+                      skills: cached.skills,
+                      ...(cached.skillMetadata
+                        ? { skillMetadata: cached.skillMetadata }
+                        : {}),
+                    }
+                  : {}),
+              }),
+              claudeSessionId,
+            };
+            console.log(
+              `[ws] claude resume session_created: bridgeSession=${sessionId} cliSession=${claudeSessionId} waiters=${targets.length} projectPath=${String(createdMsg.projectPath ?? "")}`,
+            );
+            for (const target of targets) {
+              this.send(target, createdMsg);
+            }
+            this.pendingResumeWaiters.delete(resumeKey);
+            this.broadcastSessionList();
+
+            // Name loading is non-critical and should never block resume response.
             void this.loadAndSetSessionName(
               createdSession,
               "claude",
-              msg.projectPath,
+              effectiveProjectPath,
               claudeSessionId,
             ).then(() => {
-              this.send(ws, {
-                ...this.buildSessionCreatedMessage({
-                  sessionId,
-                  provider: "claude",
-                  projectPath: msg.projectPath,
-                  session: createdSession,
-                  permissionMode: legacyPermissionMode,
-                  executionMode,
-                  planMode,
-                  sandboxMode: msg.sandboxMode,
-                  ...(cached
-                    ? {
-                        slashCommands: cached.slashCommands,
-                        skills: cached.skills,
-                        ...(cached.skillMetadata
-                          ? { skillMetadata: cached.skillMetadata }
-                          : {}),
-                      }
-                    : {}),
-                }),
-                claudeSessionId,
-              });
               this.broadcastSessionList();
             });
             this.debugEvents.set(sessionId, []);
@@ -2191,9 +2363,14 @@ export class BridgeWebSocketServer {
               type: "session_resumed",
               detail: `provider=claude session=${claudeSessionId}`,
             });
-            this.projectHistory?.addProject(msg.projectPath);
+            this.projectHistory?.addProject(effectiveProjectPath);
           })
           .catch((err) => {
+            console.error(
+              `[ws] claude resume history failed: session=${claudeSessionId} effectiveProjectPath=${effectiveProjectPath}`,
+              err,
+            );
+            this.pendingResumeWaiters.delete(resumeKey);
             this.send(ws, {
               type: "error",
               message: `Failed to load session history: ${err}`,
@@ -4057,7 +4234,7 @@ export class BridgeWebSocketServer {
     version: "old" | "new",
   ): Promise<{ base64?: string; mimeType?: string; error?: string }> {
     // Path traversal guard: reject paths containing '..' or absolute paths
-    if (filePath.includes("..") || filePath.startsWith("/")) {
+    if (filePath.includes("..") || filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)) {
       return { error: "Invalid file path" };
     }
 
@@ -4084,8 +4261,10 @@ export class BridgeWebSocketServer {
         buf = result.stdout as unknown as Buffer;
       } else {
         const absPath = resolve(cwd, filePath);
+        const cwdRoot = resolve(cwd);
+        const rel = relative(cwdRoot, absPath);
         // Verify resolved path stays within cwd
-        if (!absPath.startsWith(resolve(cwd) + "/")) {
+        if (rel.startsWith("..") || rel.includes(":") || rel === "") {
           return { error: "Invalid file path" };
         }
         buf = await readFile(absPath);

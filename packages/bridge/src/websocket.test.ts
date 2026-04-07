@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -75,7 +76,7 @@ vi.mock("./session.js", () => ({
         initialInput?: string;
       },
       pastMessages?: unknown[],
-      _worktreeOptions?: unknown,
+      worktreeOptions?: unknown,
       provider: "claude" | "codex" = "claude",
       codexOptions?: unknown,
     ): string {
@@ -100,6 +101,7 @@ vi.mock("./session.js", () => ({
         id,
         projectPath,
         startOptions: options,
+        worktreeOptions,
         claudeSessionId: options?.sessionId,
         pastMessages,
         codexOptions,
@@ -194,9 +196,36 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
   const OPEN_STATE = 1;
   let httpServer: ReturnType<typeof createServer>;
   let originalFetch: typeof globalThis.fetch;
+  let originalSetInterval: typeof globalThis.setInterval;
+  let originalClearInterval: typeof globalThis.clearInterval;
+  let intervalCallbacks: Array<() => void>;
+  let intervalHandles: Array<NodeJS.Timeout>;
+  let setIntervalMock: ReturnType<typeof vi.fn>;
+  let clearIntervalMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
+    originalSetInterval = globalThis.setInterval;
+    originalClearInterval = globalThis.clearInterval;
+    intervalCallbacks = [];
+    intervalHandles = [];
+    setIntervalMock = vi.fn((cb: () => void) => {
+      intervalCallbacks.push(cb);
+      const handle = {
+        unref: vi.fn(),
+      } as unknown as NodeJS.Timeout;
+      intervalHandles.push(handle);
+      return handle;
+    });
+    clearIntervalMock = vi.fn();
+    (globalThis as unknown as {
+      setInterval: typeof setIntervalMock;
+      clearInterval: typeof clearIntervalMock;
+    }).setInterval = setIntervalMock;
+    (globalThis as unknown as {
+      setInterval: typeof setIntervalMock;
+      clearInterval: typeof clearIntervalMock;
+    }).clearInterval = clearIntervalMock;
     httpServer = createServer();
     getSessionHistoryMock.mockReset();
     getCodexSessionHistoryMock.mockReset();
@@ -208,6 +237,8 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
     vi.unstubAllEnvs();
     httpServer.close();
   });
@@ -376,6 +407,158 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     expect(created.provider).toBe("codex");
     expect(created.projectPath).toBe("/tmp/project-main");
 
+    bridge.close();
+  });
+
+  it("uses resumeCwd for codex resume without stored worktree mapping", async () => {
+    getCodexSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored local codex question" }],
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const worktreeStore = (bridge as any).worktreeStore;
+    vi.spyOn(worktreeStore, "get").mockReturnValue(undefined);
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "codex-local-worktree",
+        projectPath: "/tmp/project-main",
+        resumeCwd: "/tmp/project-main-worktrees/feature-local",
+        provider: "codex",
+      },
+      ws,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.projectPath).toBe("/tmp/project-main");
+    expect(session.worktreeOptions).toEqual({
+      resumeCwd: "/tmp/project-main-worktrees/feature-local",
+    });
+
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    const created = sends.find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(created).toBeDefined();
+    expect(created.provider).toBe("codex");
+    expect(created.projectPath).toBe("/tmp/project-main");
+
+    bridge.close();
+  });
+
+  it("uses resumeCwd for Claude resume without stored worktree mapping", async () => {
+    getSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored local claude question" }],
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const worktreeStore = (bridge as any).worktreeStore;
+    vi.spyOn(worktreeStore, "get").mockReturnValue(undefined);
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "claude-local-worktree",
+        projectPath: "/tmp/project-main",
+        resumeCwd: "/tmp/project-main-worktrees/feature-local",
+        provider: "claude",
+      },
+      ws,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.projectPath).toBe("/tmp/project-main");
+    expect(session.worktreeOptions).toEqual({
+      resumeCwd: "/tmp/project-main-worktrees/feature-local",
+    });
+
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    const created = sends.find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(created).toBeDefined();
+    expect(created.provider).toBe("claude");
+    expect(created.projectPath).toBe("/tmp/project-main");
+
+    bridge.close();
+  });
+
+  it("prefers stored worktree mapping over resumeCwd for Claude resume", async () => {
+    getSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored bridge claude question" }],
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const worktreeStore = (bridge as any).worktreeStore;
+    vi.spyOn(worktreeStore, "get").mockReturnValue({
+      worktreePath: "/tmp/project-main-worktrees/feature-stored",
+      worktreeBranch: "feature/stored",
+      projectPath: "/tmp/project-main",
+    });
+
+    (bridge as any).handleClientMessage(
+      {
+        type: "resume_session",
+        sessionId: "claude-bridge-worktree",
+        projectPath: "/tmp/incorrect-project-path",
+        resumeCwd: "/tmp/project-main-worktrees/feature-local",
+        provider: "claude",
+      },
+      ws,
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const session = (bridge as any).sessionManager.get("s-1");
+    expect(session.projectPath).toBe("/tmp/project-main");
+    expect(session.worktreeOptions).toEqual({
+      useWorktree: true,
+      worktreeBranch: "feature/stored",
+    });
+
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    const created = sends.find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(created?.projectPath).toBe("/tmp/project-main");
+
+    bridge.close();
+  });
+
+  it("rejects Windows absolute diff image paths", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const result = await (bridge as any).loadDiffImageAsync(
+      "E:/code/project",
+      "C:/Windows/System32/calc.exe",
+      "new",
+    );
+    expect(result).toEqual({ error: "Invalid file path" });
     bridge.close();
   });
 
@@ -1395,6 +1578,100 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
+
+  it("coalesces duplicate claude resume_session requests for same provider session", async () => {
+    getSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored question" }],
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const wsA = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+    const wsB = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const resumePayload = {
+      type: "resume_session",
+      sessionId: "claude-session-dup",
+      projectPath: "/tmp/project-a",
+      provider: "claude",
+    } as const;
+
+    await Promise.all([
+      (bridge as any).handleClientMessage(resumePayload, wsA),
+      (bridge as any).handleClientMessage(resumePayload, wsB),
+    ]);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
+
+    const createdA = wsA.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    const createdB = wsB.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+
+    expect(createdA).toBeDefined();
+    expect(createdB).toBeDefined();
+    expect(createdA.sessionId).toBe(createdB.sessionId);
+
+    bridge.close();
+  });
+
+  it("reuses existing resumed session for repeated resume_session requests", async () => {
+    getSessionHistoryMock.mockResolvedValue([
+      {
+        role: "user",
+        content: [{ type: "text", text: "restored question" }],
+      },
+    ]);
+
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+    } as any;
+
+    const resumePayload = {
+      type: "resume_session",
+      sessionId: "claude-session-existing",
+      projectPath: "/tmp/project-a",
+      provider: "claude",
+    } as const;
+
+    await (bridge as any).handleClientMessage(resumePayload, ws);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const firstCreated = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(firstCreated).toBeDefined();
+
+    ws.send.mockClear();
+    await (bridge as any).handleClientMessage(resumePayload, ws);
+    await Promise.resolve();
+
+    expect(getSessionHistoryMock).toHaveBeenCalledTimes(1);
+
+    const secondCreated = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "system" && m.subtype === "session_created");
+    expect(secondCreated).toBeDefined();
+    expect(secondCreated.sessionId).toBe(firstCreated.sessionId);
+
+    bridge.close();
+  });
   it("auto-generates commit message for claude session", async () => {
     generateCommitMessageMock.mockReturnValue("feat: generated by claude");
     gitCommitMock.mockReturnValue({
@@ -1514,5 +1791,88 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     });
 
     bridge.close();
+  });
+
+  it("returns websocket error when async message handling rejects", async () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+      ping: vi.fn(),
+      terminate: vi.fn(),
+    } as any;
+
+    const onHandlers = new Map<string, (...args: unknown[]) => void>();
+    ws.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      onHandlers.set(event, handler);
+      return ws;
+    });
+
+    const handleSpy = vi
+      .spyOn(bridge as any, "handleClientMessage")
+      .mockRejectedValueOnce(new Error("boom"));
+
+    (bridge as any).handleConnection(ws);
+
+    const onMessage = onHandlers.get("message");
+    expect(onMessage).toBeDefined();
+    onMessage?.(Buffer.from(JSON.stringify({ type: "get_usage" })));
+
+    await Promise.resolve();
+
+    const sends = ws.send.mock.calls.map((c: unknown[]) => JSON.parse(c[0] as string));
+    expect(sends).toContainEqual({
+      type: "error",
+      errorCode: "message_handler_failed",
+      message: "boom",
+    });
+
+    handleSpy.mockRestore();
+    bridge.close();
+  });
+
+  it("marks websocket alive on pong and terminates stale clients on heartbeat", () => {
+    const bridge = new BridgeWebSocketServer({ server: httpServer });
+    const ws = {
+      readyState: OPEN_STATE,
+      send: vi.fn(),
+      on: vi.fn(),
+      ping: vi.fn(),
+      terminate: vi.fn(),
+    } as any;
+
+    const onHandlers = new Map<string, (...args: unknown[]) => void>();
+    ws.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+      onHandlers.set(event, handler);
+      return ws;
+    });
+
+    (bridge as any).wss.clients = new Set([ws]);
+    (bridge as any).handleConnection(ws);
+
+    expect(setIntervalMock).toHaveBeenCalledTimes(1);
+    expect(intervalHandles[0]).toBeDefined();
+    expect((intervalHandles[0] as any).unref).toHaveBeenCalledTimes(1);
+
+    const heartbeat = intervalCallbacks[0];
+    expect(heartbeat).toBeDefined();
+
+    heartbeat();
+    expect(ws.ping).toHaveBeenCalledTimes(1);
+    expect(ws.terminate).not.toHaveBeenCalled();
+
+    heartbeat();
+    expect(ws.terminate).toHaveBeenCalledTimes(1);
+
+    const onPong = onHandlers.get("pong");
+    expect(onPong).toBeDefined();
+    onPong?.();
+
+    heartbeat();
+    expect(ws.ping).toHaveBeenCalledTimes(2);
+
+    bridge.close();
+    expect(clearIntervalMock).toHaveBeenCalledWith(intervalHandles[0]);
   });
 });

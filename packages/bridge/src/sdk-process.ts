@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
+import { promisify } from "node:util";
 import { query, type Query, type SDKMessage, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 import {
   normalizeToolResultContent,
@@ -11,7 +13,6 @@ import {
   type PermissionMode,
 } from "./parser.js";
 import {
-  getClaudeAuthStatus,
   getValidClaudeAccessToken,
   validateClaudeAccessToken,
 } from "./usage.js";
@@ -135,6 +136,21 @@ export interface AuthCheckResult {
 
 const AUTH_REMEDY = "Fix: Run this command in the terminal on the machine running Bridge:\n  claude auth login";
 
+const execFileAsync = promisify(execFile);
+
+async function isClaudeCliLoggedIn(): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync("claude", ["auth", "status", "--json"], {
+      windowsHide: true,
+      timeout: 5000,
+    });
+    const parsed = JSON.parse(stdout) as { loggedIn?: unknown };
+    return parsed.loggedIn === true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Build a user-friendly auth error result.
  * The `message` field is designed to be helpful even without errorCode parsing
@@ -173,26 +189,58 @@ export function buildAuthError(
 }
 
 /**
- * Check if Claude CLI is authenticated and ensure the access token is valid.
- * If the token is expired, automatically refreshes it using the refresh token.
- * Returns authenticated=false with a message when login is required.
+ * Check whether Claude auth is available for SDK startup.
+ * Supports both API key auth and Claude Code OAuth credentials.
  */
 async function checkClaudeAuth(): Promise<AuthCheckResult> {
-  // API key authentication — always allowed.
+  // API key authentication
   if (process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN) {
     return { authenticated: true };
   }
 
-  // Subscription (OAuth) authentication is temporarily disabled pending
-  // official clarification from Anthropic on third-party SDK usage policy.
-  // See: https://code.claude.com/docs/en/legal-and-compliance
-  //
-  // Users should set ANTHROPIC_API_KEY instead.
-  return {
-    authenticated: false,
-    errorCode: "auth_api_error",
-    message: "⚠ API key required\n\nSubscription-based authentication is temporarily unavailable while we await policy clarification from Anthropic.\n\nPlease set the ANTHROPIC_API_KEY environment variable on the Bridge machine.\nhttps://console.anthropic.com/settings/keys",
-  };
+  // OAuth authentication (Claude Code login)
+  try {
+    const auth = await getValidClaudeAccessToken();
+    if (!auth.accessToken) {
+      return buildAuthError("no_access_token");
+    }
+
+    const tokenCheck = await validateClaudeAccessToken();
+    if (!tokenCheck.ok) {
+      if (tokenCheck.status === 401 || tokenCheck.status === 403) {
+        return buildAuthError("token_expired");
+      }
+      return buildAuthError("general", tokenCheck.detail);
+    }
+
+    return { authenticated: true };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+
+    // Newer Claude CLI versions may keep oauth session outside ~/.claude/.credentials.json.
+    // If CLI itself reports logged-in, allow startup and let SDK use its own auth resolution.
+    if (
+      detail.includes("credentials file not found") ||
+      detail.includes("No OAuth access token") ||
+      detail.includes("No OAuth refresh token")
+    ) {
+      if (await isClaudeCliLoggedIn()) {
+        return { authenticated: true };
+      }
+    }
+
+    if (detail.includes("credentials file not found")) {
+      return buildAuthError("no_credentials");
+    }
+    if (detail.includes("No OAuth access token")) {
+      return buildAuthError("no_access_token");
+    }
+    if (detail.includes("No OAuth refresh token")) {
+      return buildAuthError("token_expired");
+    }
+
+    return buildAuthError("general", detail);
+  }
 }
 
 export interface StartOptions {
@@ -477,33 +525,24 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
   }
 
   private startAfterAuthCheck(projectPath: string, options?: StartOptions): void {
+    // Do not hard-block startup on auth pre-check failures.
+    // Third-party API proxy setups may not have local OAuth credential files.
     checkClaudeAuth()
       .then((authCheck) => {
         if (this.stopped) return; // Cancelled while awaiting auth
 
         if (!authCheck.authenticated) {
-          console.log(`[sdk-process] Auth pre-check failed: ${authCheck.message}`);
-          this.emitMessage({
-            type: "error",
-            message: authCheck.message ?? "Claude is not authenticated. Please run: claude auth login",
-            ...(authCheck.errorCode ? { errorCode: authCheck.errorCode } : {}),
-          });
-          this.setStatus("idle");
-          this.emit("exit", 1);
-          return;
+          console.warn(`[sdk-process] Auth pre-check warning: ${authCheck.message}`);
         }
 
         this.startSdkQuery(projectPath, options);
       })
       .catch((err) => {
         if (this.stopped) return;
-        console.error("[sdk-process] Auth check error:", err);
-        this.emitMessage({
-          type: "error",
-          message: `Auth check failed: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        this.setStatus("idle");
-        this.emit("exit", 1);
+        console.warn(
+          `[sdk-process] Auth pre-check skipped due to error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        this.startSdkQuery(projectPath, options);
       });
   }
 
@@ -991,21 +1030,6 @@ export class SdkProcess extends EventEmitter<SdkProcessEvents> {
 
       // Extract session ID and model from system/init
       if (message.type === "system" && "subtype" in message && (message as Record<string, unknown>).subtype === "init") {
-        // Guard: reject OAuth authentication even if SDK accepted it.
-        // API key (ANTHROPIC_API_KEY) is the only allowed auth source.
-        const apiKeySource = (message as Record<string, unknown>).apiKeySource;
-        if (apiKeySource === "oauth") {
-          console.log("[sdk-process] Rejected OAuth auth source at runtime");
-          this.emitMessage({
-            type: "error",
-            message: "⚠ API key required\n\nOAuth (subscription) authentication is not permitted. Please set the ANTHROPIC_API_KEY environment variable on the Bridge machine.\nhttps://console.anthropic.com/settings/keys",
-            errorCode: "auth_api_error",
-          });
-          this.stop();
-          this.emit("exit", 1);
-          return;
-        }
-
         if (this.initTimeoutId) {
           clearTimeout(this.initTimeoutId);
           this.initTimeoutId = null;

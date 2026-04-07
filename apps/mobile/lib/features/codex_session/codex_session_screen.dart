@@ -127,15 +127,11 @@ class _CodexSessionScreenState extends State<CodexSessionScreen> {
 
     final bridge = context.read<BridgeService>();
     _pendingSub = bridge.messages.listen((msg) {
-      if (msg is SystemMessage && msg.subtype == 'session_created') {
-        if (widget.projectPath != null &&
-            msg.projectPath != null &&
-            msg.projectPath != widget.projectPath) {
-          return;
-        }
-        if (msg.sessionId != null && mounted) {
-          _resolveSession(msg);
-        }
+      if (msg is SystemMessage &&
+          msg.subtype == 'session_created' &&
+          msg.sessionId != null &&
+          mounted) {
+        _resolveSession(msg);
       }
     });
   }

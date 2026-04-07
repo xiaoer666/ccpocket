@@ -120,16 +120,11 @@ class _ClaudeSessionScreenState extends State<ClaudeSessionScreen> {
 
     final bridge = context.read<BridgeService>();
     _pendingSub = bridge.messages.listen((msg) {
-      if (msg is SystemMessage && msg.subtype == 'session_created') {
-        // Filter by projectPath to avoid picking up another session's event
-        if (widget.projectPath != null &&
-            msg.projectPath != null &&
-            msg.projectPath != widget.projectPath) {
-          return;
-        }
-        if (msg.sessionId != null && mounted) {
-          _resolveSession(msg);
-        }
+      if (msg is SystemMessage &&
+          msg.subtype == 'session_created' &&
+          msg.sessionId != null &&
+          mounted) {
+        _resolveSession(msg);
       } else if (msg is ErrorMessage && _isPending && mounted) {
         _pendingSub?.cancel();
         _pendingSub = null;

@@ -1,5 +1,5 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { normalizeWorktreePath } from "./sessions-index.js";
 
@@ -10,8 +10,9 @@ const MAX_PROJECTS = 20;
 const MIN_PATH_SEGMENTS = 3;
 
 function isValidProjectPath(path: string): boolean {
-  if (!path.startsWith("/")) return false;
-  const segments = path.split("/").filter(Boolean);
+  if (!path || !isAbsolute(path)) return false;
+  const normalized = resolve(path).replaceAll("\\", "/");
+  const segments = normalized.split("/").filter(Boolean);
   return segments.length >= MIN_PATH_SEGMENTS;
 }
 

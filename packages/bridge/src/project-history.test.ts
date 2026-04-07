@@ -84,23 +84,29 @@ describe("ProjectHistory", () => {
   it("rejects invalid project paths", async () => {
     const ph = new ProjectHistory(historyFile);
     await ph.init();
-    ph.addProject("/path/a"); // too shallow
     ph.addProject("relative/path/project"); // not absolute
     ph.addProject(""); // empty
+    ph.addProject("E:\\bad"); // too shallow on Windows
     ph.addProject("/Users/test/valid-project"); // valid
     expect(ph.getProjects()).toEqual(["/Users/test/valid-project"]);
   });
 
-  it("filters out invalid paths on init", async () => {
-    // Write a file with mixed valid and invalid paths
+  it("accepts valid Windows absolute project paths", async () => {
+    const ph = new ProjectHistory(historyFile);
+    await ph.init();
+    ph.addProject("E:\\code\\DIY_ESP32S3_WATCH");
+    expect(ph.getProjects()).toEqual(["E:\\code\\DIY_ESP32S3_WATCH"]);
+  });
+
+  it("filters out invalid Windows paths on init", async () => {
     await writeFile(
       historyFile,
-      JSON.stringify(["/path/bad", "/Users/test/good-project", "/also/bad"]),
+      JSON.stringify(["E:\\code\\DIY_ESP32S3_WATCH", "relative\\path", "E:\\bad"]),
       "utf-8",
     );
     const ph = new ProjectHistory(historyFile);
     await ph.init();
-    expect(ph.getProjects()).toEqual(["/Users/test/good-project"]);
+    expect(ph.getProjects()).toEqual(["E:\\code\\DIY_ESP32S3_WATCH"]);
   });
 
   it("handles corrupt file gracefully", async () => {
