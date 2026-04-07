@@ -26,9 +26,9 @@ describe("pathToSlug", () => {
     expect(pathToSlug("/Users/x/my-project")).toBe("-Users-x-my-project");
   });
 
-  it("converts underscores to hyphens", () => {
-    expect(pathToSlug("/Users/x/flutter_claude_sandbox")).toBe(
-      "-Users-x-flutter-claude-sandbox",
+  it("normalizes Windows separators before slugging", () => {
+    expect(pathToSlug("E:\\code\\DIY_ESP32S3_WATCH")).toBe(
+      "E:-code-DIY-ESP32S3-WATCH",
     );
   });
 });
@@ -77,6 +77,12 @@ describe("normalizeWorktreePath", () => {
     expect(
       normalizeWorktreePath("/Users/x/Workspace/gtri-worktrees/test-session-verify"),
     ).toBe("/Users/x/Workspace/gtri");
+  });
+
+  it("normalizes a Windows worktree path to the main project path", () => {
+    expect(
+      normalizeWorktreePath("E:\\code\\news_gated-worktrees\\feature-x"),
+    ).toBe("E:\\code\\news_gated");
   });
 
   it("returns the original path when not a worktree path", () => {
@@ -441,14 +447,18 @@ describe("scanJsonlDir", () => {
 
 describe("codex sessions integration", () => {
   const oldHome = process.env.HOME;
-  const tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-codex-home-"));
+  const oldUserProfile = process.env.USERPROFILE;
+  let tempHome = "";
 
   beforeEach(() => {
+    tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-codex-home-"));
     process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
   });
 
   afterEach(() => {
     process.env.HOME = oldHome;
+    process.env.USERPROFILE = oldUserProfile;
     rmSync(tempHome, { recursive: true, force: true });
   });
 
@@ -548,7 +558,58 @@ describe("codex sessions integration", () => {
     expect(worktreeFilter.sessions.some((s) => s.sessionId === threadId)).toBe(true);
   });
 
-  it("returns only codex sessions when provider=codex", async () => {
+  it("extracts codex resumeCwd from environment_context when session_meta cwd is absent", async () => {
+    const threadId = "019d584b-378f-7831-97e4-596bd3bbc869";
+    const mainProjectPath = "E:\\code\\news_gated";
+    const worktreePath = "E:\\code\\news_gated-worktrees\\feature-x";
+    const codexDir = join(tempHome, ".codex", "sessions", "2026", "04", "04");
+    mkdirSync(codexDir, { recursive: true });
+
+    const lines = [
+      JSON.stringify({
+        timestamp: "2026-04-04T11:41:25.000Z",
+        type: "session_meta",
+        payload: { id: threadId, git: { branch: "feature/x" } },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-04T11:41:25.100Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "<environment_context>\n  <cwd>E:\\code\\news_gated-worktrees\\feature-x</cwd>\n  <shell>powershell</shell>\n</environment_context>",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        timestamp: "2026-04-04T11:41:26.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "worktree response" }],
+        },
+      }),
+    ];
+    writeFileSync(
+      join(codexDir, `rollout-2026-04-04T19-40-17-${threadId}.jsonl`),
+      lines.join("\n"),
+    );
+
+    const { sessions } = await getAllRecentSessions({ limit: 200 });
+    const entry = sessions.find((s) => s.sessionId === threadId);
+    expect(entry).toBeDefined();
+    expect(entry?.provider).toBe("codex");
+    expect(entry?.projectPath).toBe(mainProjectPath);
+    expect(entry?.resumeCwd).toBe(worktreePath);
+  });
+
+  it("filters recent sessions by provider", async () => {
     const threadId = "019c56c0-d4d8-7b22-9e3c-200664d68088";
     const codexDir = join(tempHome, ".codex", "sessions", "2026", "02", "13");
     mkdirSync(codexDir, { recursive: true });
@@ -968,14 +1029,18 @@ describe("codex sessions integration", () => {
 
 describe("claude namedOnly optimization", () => {
   const oldHome = process.env.HOME;
-  const tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-claude-home-"));
+  const oldUserProfile = process.env.USERPROFILE;
+  let tempHome = "";
 
   beforeEach(() => {
+    tempHome = mkdtempSync(join(tmpdir(), "ccpocket-test-claude-home-"));
     process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
   });
 
   afterEach(() => {
     process.env.HOME = oldHome;
+    process.env.USERPROFILE = oldUserProfile;
     rmSync(tempHome, { recursive: true, force: true });
   });
 

@@ -181,7 +181,7 @@ interface ScanJsonlDirOptions {
 
 /** Convert a filesystem path to Claude's project directory slug (e.g. /foo/bar → -foo-bar). */
 export function pathToSlug(p: string): string {
-  return p.replaceAll("/", "-").replaceAll("_", "-");
+  return p.replaceAll("\\", "/").replaceAll("/", "-").replaceAll("_", "-");
 }
 
 /**
@@ -189,8 +189,10 @@ export function pathToSlug(p: string): string {
  * e.g. /path/to/project-worktrees/branch → /path/to/project
  */
 export function normalizeWorktreePath(p: string): string {
-  const match = p.match(/^(.+)-worktrees\/[^/]+$/);
-  return match?.[1] ?? p;
+  const normalized = p.replaceAll("\\", "/");
+  const match = normalized.match(/^(.+)-worktrees\/[^/]+$/);
+  if (!match?.[1]) return p;
+  return p.includes("\\") ? match[1].replaceAll("/", "\\") : match[1];
 }
 
 /**
@@ -241,6 +243,7 @@ const RE_TYPE_ASSISTANT = /"type"\s*:\s*"assistant"/;
 const RE_TIMESTAMP = /"timestamp"\s*:\s*"([^"]+)"/;
 const RE_GIT_BRANCH = /"gitBranch"\s*:\s*"([^"]+)"/;
 const RE_CWD = /"cwd"\s*:\s*"([^"]+)"/;
+const RE_ENV_CONTEXT_CWD = /<cwd>([^<]+)<\/cwd>/;
 const RE_IS_SIDECHAIN = /"isSidechain"\s*:\s*true/;
 const RE_PERMISSION_MODE = /"permissionMode"\s*:\s*"([^"]+)"/;
 const RE_TYPE_CUSTOM_TITLE = /"type"\s*:\s*"custom-title"/;
@@ -1214,7 +1217,29 @@ function parseCodexSessionJsonl(raw: string, fallbackSessionId: string): CodexSe
 
     if (entry.type === "response_item") {
       const payload = entry.payload as Record<string, unknown> | undefined;
-      if (!payload || payload.type !== "message" || payload.role !== "assistant") {
+      if (!payload || payload.type !== "message") {
+        continue;
+      }
+      if (payload.role === "user") {
+        const content = payload.content;
+        if (Array.isArray(content)) {
+          const text = (content as Array<Record<string, unknown>>)
+            .filter((item) => item.type === "input_text" && typeof item.text === "string")
+            .map((item) => item.text as string)
+            .join("\n");
+          if (!resumeCwd) {
+            const cwdMatch = text.match(RE_ENV_CONTEXT_CWD);
+            if (cwdMatch?.[1]) {
+              resumeCwd = cwdMatch[1];
+              if (!projectPath) {
+                projectPath = normalizeWorktreePath(resumeCwd);
+              }
+            }
+          }
+        }
+        continue;
+      }
+      if (payload.role !== "assistant") {
         continue;
       }
       const content = payload.content;
