@@ -673,7 +673,16 @@ describe("CodexProcess (app-server)", () => {
     proc.stop();
   });
 
-  it("uses acceptForSession for command approvals", async () => {
+  it("queues input when no resolver is ready", () => {
+    const proc = new CodexProcess();
+
+    const queued = proc.sendInput("/compact");
+
+    expect(queued).toBe(true);
+    expect((proc as any).queuedInputs).toEqual([{ text: "/compact" }]);
+  });
+
+  it("approveAlways accepts command execution for session scope", async () => {
     const proc = new CodexProcess();
 
     proc.start("/tmp/project-approve-always");

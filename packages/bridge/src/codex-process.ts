@@ -131,6 +131,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
   private startModel: string | undefined;
 
   private inputResolve: ((input: PendingInput) => void) | null = null;
+  private queuedInputs: PendingInput[] = [];
   private pendingTurnId: string | null = null;
   private pendingTurnCompletion: PendingTurnCompletion | null = null;
   private pendingApprovals = new Map<string, PendingApproval>();
@@ -311,6 +312,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
 
     this.pendingApprovals.clear();
     this.pendingUserInputs.clear();
+    this.queuedInputs = [];
     this.rejectAllPending(new Error("stopped"));
 
     if (this.child) {
@@ -334,6 +336,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     this.pendingTurnCompletion = null;
     this.pendingApprovals.clear();
     this.pendingUserInputs.clear();
+    this.queuedInputs = [];
     this.lastTokenUsage = null;
     this.startModel = sanitizeCodexModel(options?.model);
     this._approvalPolicy = options?.approvalPolicy ?? "never";
@@ -410,44 +413,43 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
     });
   }
 
-  sendInput(text: string): void {
+  sendInput(text: string): boolean {
     if (!this.inputResolve) {
-      console.error("[codex-process] No pending input resolver for sendInput");
-      return;
+      this.queuedInputs.push({ text });
+      return true;
     }
     const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({ text });
+    return false;
   }
 
   sendInputWithImages(
     text: string,
     images: Array<{ base64: string; mimeType: string }>,
-  ): void {
+  ): boolean {
     if (!this.inputResolve) {
-      console.error(
-        "[codex-process] No pending input resolver for sendInputWithImages",
-      );
-      return;
+      this.queuedInputs.push({ text, images });
+      return true;
     }
     const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({ text, images });
+    return false;
   }
 
   sendInputWithSkill(
     text: string,
     skill: { name: string; path: string },
-  ): void {
+  ): boolean {
     if (!this.inputResolve) {
-      console.error(
-        "[codex-process] No pending input resolver for sendInputWithSkill",
-      );
-      return;
+      this.queuedInputs.push({ text, skill });
+      return true;
     }
     const resolve = this.inputResolve;
     this.inputResolve = null;
     resolve({ text, skill });
+    return false;
   }
 
   approve(toolUseId?: string, _updatedInput?: Record<string, unknown>): void {
@@ -781,6 +783,7 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
       if (!this.stopped) {
         const message = err instanceof Error ? err.message : String(err);
         console.error("[codex-process] bootstrap error:", err);
+
         this.emitMessage({ type: "error", message: `Codex error: ${message}` });
         this.emitMessage({
           type: "result",
@@ -894,6 +897,12 @@ export class CodexProcess extends EventEmitter<CodexProcessEvents> {
           this._pendingPlanInput = null;
           this.inputResolve = null;
           resolve({ text });
+          return;
+        }
+        const queuedInput = this.queuedInputs.shift();
+        if (queuedInput) {
+          this.inputResolve = null;
+          resolve(queuedInput);
         }
       });
       if (this.stopped || !pendingInput.text) break;

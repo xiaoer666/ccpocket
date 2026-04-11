@@ -1243,7 +1243,7 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
     bridge.close();
   });
 
-  it("codex busy input is rejected", async () => {
+  it("codex busy input is acked as queued and interrupts current turn", async () => {
     const bridge = new BridgeWebSocketServer({ server: httpServer });
     const ws = {
       readyState: OPEN_STATE,
@@ -1267,24 +1267,29 @@ describe("BridgeWebSocketServer resume/get_history flow", () => {
 
     const session = (bridge as any).sessionManager.get(sessionId);
     session.process.isWaitingForInput = false;
+    session.process.sendInput.mockReturnValue(true);
 
     ws.send.mockClear();
     (bridge as any).handleClientMessage(
       {
         type: "input",
         sessionId,
-        text: "while busy",
+        text: "/compact",
       },
       ws,
     );
 
-    const last = JSON.parse(ws.send.mock.calls.at(-1)?.[0] as string);
-    expect(last).toMatchObject({
-      type: "input_rejected",
+    const inputAck = ws.send.mock.calls
+      .map((c: unknown[]) => JSON.parse(c[0] as string))
+      .find((m: any) => m.type === "input_ack");
+    expect(inputAck).toMatchObject({
+      type: "input_ack",
       sessionId,
-      reason: "Process is busy",
+      queued: true,
     });
-    expect(session.process.sendInput).not.toHaveBeenCalled();
+
+    expect(session.process.sendInput).toHaveBeenCalledWith("/compact");
+    expect(session.process.interrupt).toHaveBeenCalledTimes(1);
 
     bridge.close();
   });

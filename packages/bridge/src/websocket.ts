@@ -789,24 +789,10 @@ export class BridgeWebSocketServer {
         }
         const text = msg.text;
 
-        // Codex: reject if the process is not waiting for input (turn-based, no internal queue)
-        if (
-          session.provider === "codex" &&
-          !session.process.isWaitingForInput
-        ) {
-          this.send(ws, {
-            type: "input_rejected",
-            sessionId: session.id,
-            reason: "Process is busy",
-          });
-          break;
-        }
-
         // Snapshot busy state before dispatch. We prefer the actual enqueue
         // result returned by SdkProcess sendInput* below, but keep this as a
         // fallback for test doubles and async paths.
-        const isAgentBusySnapshot =
-          session.provider === "claude" && !session.process.isWaitingForInput;
+        const isAgentBusySnapshot = !session.process.isWaitingForInput;
 
         // Normalize images: support new `images` array and legacy single-image fields
         let images: Array<{ base64: string; mimeType: string }> = [];
@@ -863,35 +849,75 @@ export class BridgeWebSocketServer {
           }
         }
 
-        // Codex input path
+        // Codex input path — enqueue first, then interrupt if busy
         if (session.provider === "codex") {
-          this.send(ws, {
-            type: "input_ack",
-            sessionId: session.id,
-            queued: false,
-          });
           const codexProc = session.process as CodexProcess;
+          let wasQueued = false;
           if (images.length > 0) {
-            codexProc.sendInputWithImages(text, images);
+            const result = codexProc.sendInputWithImages(text, images);
+            wasQueued =
+              typeof result === "boolean" ? result : isAgentBusySnapshot;
           } else if (msg.imageId && this.galleryStore) {
+            this.send(ws, {
+              type: "input_ack",
+              sessionId: session.id,
+              queued: isAgentBusySnapshot,
+            });
             this.galleryStore
               .getImageAsBase64(msg.imageId)
               .then((imageData) => {
+                let queuedAfterResolve = false;
                 if (imageData) {
-                  codexProc.sendInputWithImages(text, [imageData]);
+                  const result = codexProc.sendInputWithImages(text, [imageData]);
+                  queuedAfterResolve =
+                    typeof result === "boolean" ? result : isAgentBusySnapshot;
                 } else {
                   console.warn(`[ws] Image not found: ${msg.imageId}`);
-                  codexProc.sendInput(text);
+                  const result = codexProc.sendInput(text);
+                  queuedAfterResolve =
+                    typeof result === "boolean" ? result : isAgentBusySnapshot;
+                }
+                if (queuedAfterResolve) {
+                  console.log(
+                    `[ws] Agent is busy — will queue input and interrupt current turn`,
+                  );
+                  codexProc.interrupt();
                 }
               })
               .catch((err) => {
                 console.error(`[ws] Failed to load image: ${err}`);
-                codexProc.sendInput(text);
+                const result = codexProc.sendInput(text);
+                const queuedAfterResolve =
+                  typeof result === "boolean" ? result : isAgentBusySnapshot;
+                if (queuedAfterResolve) {
+                  console.log(
+                    `[ws] Agent is busy — will queue input and interrupt current turn`,
+                  );
+                  codexProc.interrupt();
+                }
               });
+            break;
           } else if (msg.skill) {
-            codexProc.sendInputWithSkill(text, msg.skill);
+            const result = codexProc.sendInputWithSkill(text, msg.skill);
+            wasQueued =
+              typeof result === "boolean" ? result : isAgentBusySnapshot;
           } else {
-            codexProc.sendInput(text);
+            const result = codexProc.sendInput(text);
+            wasQueued =
+              typeof result === "boolean" ? result : isAgentBusySnapshot;
+          }
+
+          this.send(ws, {
+            type: "input_ack",
+            sessionId: session.id,
+            queued: wasQueued,
+          });
+
+          if (wasQueued) {
+            console.log(
+              `[ws] Agent is busy — will queue input and interrupt current turn`,
+            );
+            codexProc.interrupt();
           }
           break;
         }
