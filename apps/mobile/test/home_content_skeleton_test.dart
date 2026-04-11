@@ -190,7 +190,7 @@ void main() {
             draftService: draftService,
           ),
         );
-        await tester.pumpAndSettle();
+        await tester.pump(const Duration(milliseconds: 100));
 
         expect(find.text('resume me'), findsNothing);
       },
